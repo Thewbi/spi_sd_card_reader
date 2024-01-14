@@ -3,7 +3,12 @@
 
 #include "stdafx.h"
 #include "stdint.h" 
-#include "inttypes.h."
+#include "inttypes.h"
+
+#include <iostream>
+#include <cstdint>
+#include <vector>
+#include <array>
 
 static void DumpByteArray(BYTE *b, int n){
 	int i = 0;
@@ -36,6 +41,10 @@ HANDLE h341 = NULL;
 #define ACMD41 41
 #define ACMD41_ARG 0x40000000
 #define ACMD41_CRC 0x00
+
+#define CMD16 16
+#define CMD16_ARG 0x00000200
+#define CMD16_CRC 0x15
 
 uint8_t SPI_transfer(uint8_t data) 
 {
@@ -119,7 +128,7 @@ void SD_printR1(uint8_t res)
 	if (ERASE_RESET(res))
 		printf("\tErase Reset Error\r\n");
 	if (IN_IDLE(res))
-		printf("\tIn Idle State\r\n");
+		printf("\tIn Idle State (0x00000001)\r\n");
 }
 
 void SD_readRes7(uint8_t* res)
@@ -165,7 +174,7 @@ void SD_readRes3(uint8_t* res)
 
 void SD_printR7(uint8_t *res) {
 
-	DumpByteArray(res, 5);
+	//DumpByteArray(res, 5);
 
 	SD_printR1(res[0]);    
 	if (res[0] > 1) 
@@ -273,8 +282,10 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 	//SPI_transfer(0xFF);    
 	////CS_ENABLE();
 	//CH341SetStream(iDevIndex, 0x81);
-	//SPI_transfer(0xFF);    
-	 
+	//SPI_transfer(0xFF); 
+	
+	Sleep(100);
+	
 	// send CMD17    
 	SD_command(CMD17, addr, CMD17_CRC);    
 	
@@ -283,12 +294,12 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 	
 	// if response received from card    
 	if (res1 != 0xFF)    
-	{        
-		// wait for a response token (timeout = 100ms)        
+	{
+		// wait for a response token 0xFE because the SD Card takes some time to produce data (timeout = 100ms)        
 		readAttempts = 0;        
 		while(++readAttempts != SD_MAX_READ_ATTEMPTS)
 		{
-			Sleep(10);
+			//Sleep(1);
 			if ((read = SPI_transfer(0xFF)) != 0xFF)
 			{
 				break;
@@ -306,7 +317,9 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 			
 			// read 16-bit CRC            
 			SPI_transfer(0xFF);            
-			SPI_transfer(0xFF);        
+			SPI_transfer(0xFF);
+
+
 		}
 		else
 		{
@@ -326,8 +339,68 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 	return res1;
 }
 
+// https://github.com/hazelnusse/crc7/blob/master/crc7.cc
+uint8_t CRCTable[256];
+
+void GenerateCRCTable()
+{
+	int i, j;
+	uint8_t CRCPoly = 0x89;  // the value of our CRC-7 polynomial
+
+	// generate a table value for all 256 possible byte values
+	for (i = 0; i < 256; ++i) {
+		CRCTable[i] = (i & 0x80) ? i ^ CRCPoly : i;
+		for (j = 1; j < 8; ++j) {
+			CRCTable[i] <<= 1;
+			if (CRCTable[i] & 0x80)
+				CRCTable[i] ^= CRCPoly;
+		}
+	}
+}
+
+// adds a message byte to the current CRC-7 to get a the new CRC-7
+uint8_t CRCAdd(uint8_t CRC, uint8_t message_byte)
+{
+	return CRCTable[(CRC << 1) ^ message_byte];
+}
+
+// returns the CRC-7 for a message of "length" bytes
+uint8_t getCRC(uint8_t message[], int length)
+{
+	int i;
+	uint8_t CRC = 0;
+
+	for (i = 0; i < length; ++i)
+		CRC = CRCAdd(CRC, message[i]);
+
+	return CRC;
+}
+
+void PrintFrame(std::array<uint8_t, 6>& f)
+{
+	for (auto e : f)
+		std::cout << std::hex << (int)e << " ";
+	std::cout << std::endl;
+}
+
 int _tmain(int argc, _TCHAR* argv[])
 {
+	GenerateCRCTable();
+
+	std::vector<std::array<uint8_t, 6>> CommandFrames;
+	CommandFrames.push_back({ {0x40, 0, 0, 0, 0, 0} });
+	CommandFrames.push_back({ {0x48, 0, 0, 1, 0xAA, 0} });
+	CommandFrames.push_back({ {0x69, 0x40, 0, 0, 0, 0} });
+	CommandFrames.push_back({ {0x77, 0x00, 0, 0, 0, 0} });
+	CommandFrames.push_back({ {0x7A, 0x00, 0, 0, 0, 0} });
+	CommandFrames.push_back({ {0x50, 0x00, 0, 0x02, 0, 0} });
+
+	std::cout << "Command, Argument, CRC7" << std::endl;
+	for (auto& Frame : CommandFrames) {
+		Frame[5] = (getCRC(Frame.data(), 5) << 1) | 1;
+		PrintFrame(Frame);
+	}
+
 	printf("CH341 version: %lu\r\n", CH341GetVersion());
 	printf("Device %lu name is '%s'\r\n", iDevIndex, CH341GetDeviceName(iDevIndex));
 
@@ -355,6 +428,18 @@ int _tmain(int argc, _TCHAR* argv[])
 		return 0;
 	}
 
+	// send 80 pulses to active SD card
+	for (uint8_t i = 0; i < 10; i++)
+	{
+		SPI_transfer(0xFF);
+	}
+
+	//
+	// CMD 0 - reset SD memory card - go to idle state
+	//
+
+	printf("CMD 0 - reset SD memory card - go to idle state\r\n");
+
 	// send CMD0 - 40 00 00 00 00 95
 	SD_command(CMD0, CMD0_ARG, CMD0_CRC);
 
@@ -364,6 +449,15 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	SPI_transfer(0xFF);
 
+	//
+	// CMD 8 - SENDS_IF_COND - Sends SD Memory card interface condition, which
+	// includes host supply voltage information and asks the card whether card
+	// supports voltage. 
+	// Reserved bits have to be set to 0.
+	//
+
+	printf("CMD 8 - Send card interface condition.\r\n");
+
 	// send CMD8 - 48 00 00 01 AA 87
 	SD_command(CMD8, CMD8_ARG, CMD8_CRC);
 
@@ -371,6 +465,12 @@ int _tmain(int argc, _TCHAR* argv[])
 	uint8_t res7_buffer[5];
 	SD_readRes7(res7_buffer);
 	SD_printR7(res7_buffer);
+
+	//
+	// CMD 58 - read OCR (operation conditions register)
+	//
+
+	printf("CMD 58 - read OCR (operation conditions register)\r\n");
 
 	// send CMD58 - 7A 00 00 00 00 fd
 	SD_command(CMD58, CMD58_ARG, CMD58_CRC);
@@ -380,19 +480,45 @@ int _tmain(int argc, _TCHAR* argv[])
 	SD_readRes3(res3_buffer);
 	SD_printR3(res3_buffer);
 
-	// send CMD55
-	SD_command(CMD55, CMD55_ARG, CMD55_CRC);
+	res1 = 0x01;
 
-	// read response of type R1
-	res1 = SD_readRes1();
-	SD_printR1(res1);
+	while (res1 != 0x00) 
+	{
+		//
+		// CMD 55 - APP_CMD (put before each application specific command)
+		//
 
-	// send CMD41
-	SD_command(ACMD41, ACMD41_ARG, ACMD41_CRC);
+		printf("CMD 55 - APP_CMD (put before each application specific command)\r\n");
 
-	// read response of type R1
-	res1 = SD_readRes1();
-	SD_printR1(res1);
+		// send CMD55
+		SD_command(CMD55, CMD55_ARG, CMD55_CRC);
+
+		// read response of type R1
+		res1 = SD_readRes1();
+		SD_printR1(res1);
+	
+		//
+		// ACMD 41 - SD_SEND_OP_COND
+		//
+
+		printf("ACMD 41 - SD_SEND_OP_COND\r\n");
+
+		// send CMD41
+		SD_command(ACMD41, ACMD41_ARG, ACMD41_CRC);
+
+		// read response of type R1
+		res1 = SD_readRes1();
+		SD_printR1(res1);
+	}
+
+	/**/
+	//
+	// SECOND TIME
+	// 
+	// CMD 58 - read OCR (operation conditions register)
+	//
+
+	printf("CMD 58 - read OCR (operation conditions register)\r\n");
 
 	// send CMD58 - 7A 00 00 00 00 fd
 	SD_command(CMD58, CMD58_ARG, CMD58_CRC);
@@ -401,8 +527,28 @@ int _tmain(int argc, _TCHAR* argv[])
 	//uint8_t res3_buffer[5];
 	SD_readRes3(res3_buffer);
 	SD_printR3(res3_buffer);
+	
+
+	/*
+	//
+	// CMD 16 - set block length
+	//
+
+	printf("CMD 16 - set block length\r\n");
 
 	// CMD16 - set block length ( not executed because on SDHC cards, the block length is 512 always )
+	SD_command(CMD16, CMD16_ARG, CMD16_CRC);
+
+	// read response of type R1
+	res1 = SD_readRes1();
+	SD_printR1(res1);
+	*/
+
+	//
+	// CMD 17 - read single block
+	//
+
+	printf("CMD 17 - read single block\r\n");
 
 	uint8_t res[5];
 	uint8_t sdBuf[512];
@@ -413,11 +559,14 @@ int _tmain(int argc, _TCHAR* argv[])
 	uint8_t token;
 	SD_readSingleBlock(0x00000000, sdBuf, &token);
 
-	for (uint16_t i = 0; i < 512; i++)
+	if (token == 0xFE)
 	{
-		printf("%x ", sdBuf[0]);
+		for (uint16_t i = 0; i < 512; i++)
+		{
+			printf("%x ", sdBuf[i]);
+		}
+		printf("\r\n");
 	}
-	printf("\r\n");
 
 	printf("Closeing device# %lu\r\n", iDevIndex);
 	CH341CloseDevice(iDevIndex);
