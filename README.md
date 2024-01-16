@@ -189,22 +189,24 @@ CH341CloseDevice(iDevIndex); closes the USB device
 
 
 
-## Reading from a SD Card
+## Initializing the SD Card
 
-Once the SPI protocol layer is mastered and you are able to read bytes, then next layer of the software will be
-the SD card protocol.
+Once the SPI protocol layer is mastered and you are able to read bytes, then the next layer of the software will be
+to use the SD card protocol to initialize the SD card.
 
 SD cards do have internal circuitry and internal state. A SD card can execute a protocol. Initially a SD card starts
 up in a state where it does not talk SPI. It talks some other protocol (SD I think). In order to disable
 the SD protocol and activate the SPI protocol certain messages have to be send to the SD card using the USB SPI
 debugger.
 
-Changing a SD card into SPI mode and reseting and starting it is called the "initialization sequence".
-This page: https://www.rjhcoding.com/avrc-sd-interface-1.php describes a sequence of message to send over SPI in
+Switching the SD card into SPI mode, reseting and starting it is called the "Initialization Sequence".
+This page https://www.rjhcoding.com/avrc-sd-interface-1.php describes a sequence of messages to send over SPI in
 order to perform all required steps. Following this tutorial worked for me with the USB SPI debugger, the breakout
 board and the specific SD cards that I used for testing.
 
-Once the Card is initialized and ready to be read data from, entire blocks can be read from the SD card.
+## Reading Blocks from the SD Card
+
+Once the Card is initialized and ready to be read, entire blocks can be read from the SD card.
 The block size can be changed in theory but it is recommended to keep the default of 512 bytes per block.
 
 In order to read a block, the SD card has to have gone through the initialization process and it has to be ready
@@ -212,7 +214,10 @@ for data reading.
 
 The way to read data from a SD card is to read an entire block. To read a block the index of the block to read
 is sent to the SD card using the CMD 17! Once CMD 17 is sent and a positive response byte 0x01 is received, the 
-512 bytes have to be read from the SD card by sending the dummy byte 0xFF 512 bytes. For each dummy byte 0xFF,
+SD card will then produce the bytes from that specific block. In order to produces those bytes, you have to 
+poll the card with the 0xFF byte to read the next byte from the block.
+
+512 bytes have to be read from the SD card by sending the dummy byte 0xFF 512 times. For each dummy byte 0xFF,
 one byte of the block is returned by the SD card.
 
 Here is a implementation of a block reading function. Be aware that this implementation is very inefficient in that
@@ -273,3 +278,94 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 	return res1;
 }
 ```
+
+### Dealing with Partitions and File Systems
+
+At this point, we are able to communicate over SPI. The card is initialized and individual blocks can be read.
+This means that all the infrastructure we need is in place.
+
+The next step is to start interpreting the bytes that are read (per block) from the SD card.
+The bytes on the SD card do depend on the bytes that the user has written onto the SD card in the first place.
+
+I think that there is a wide range of possibilities in which a user can use a SD card.
+So milleage will vary. It depends on how you have formatted your specific SD card!
+
+In this document I will describe a scenario that is common in embedded systems.
+In embedded systems, a sd card often times is used as a replacement for a hard drive.
+
+As such the sd card is partitioned like a hard drive can be partitioned.
+The partitioning sceme is the top most layer that we have to deal with.
+
+The first block (block index 0, 512 bytes) of the SD card contains the MBR (Master Boot Record)
+This MBR is constructed according to a specific format but the bytes that are written into the individual parts
+vary.
+
+In my example SD Cards, the first block looks like this:
+
+```
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 
+ff ff ff ff ff ff ff ff 34 28 e0 97 00 00 80 20 
+21 00 0c 71 21 10 00 08 00 00 00 00 04 00 00 71 
+22 10 83 8a 08 82 00 08 04 00 00 f8 1b 00 00 00 
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 55 aa
+```
+
+The format is:
+
+* First 440 bytes are reserved for boot code for the initial boot loader. (Here: 0xFF ... 0xFF)
+* Disk signature (4 byte) 34 28 e0 97
+* Null Bytes (2 byte) 00 00
+* Partition table: (64 byte) Four 16 byte entries
+* end marker 0x55 (01010101 binary) 0xAA (10101010 binary)
+
+As you can see in the example MBR above, there is no machine code in the first 440 bytes.
+Instead the creator of the SD card has entered 0xFF into the first 440 bytes. This was 
+probably done because the embedded system will not execute the boot code stored in the
+first 440 bytes!
+
+The disk signature is 34 28 e0 97
+
+The null bytes are present.
+
+The partition table consists of the four 16 byte entries:
+
+* https://en.wikipedia.org/wiki/Master_boot_record
+* https://thestarman.pcministry.com/asm/mbr/PartTables3.htm
+* https://thestarman.pcministry.com/asm/mbr/PartTypes.htm
+
+| Bootable Flag (0x80 == bootable) |  Starting Sector ( in CHS ) | File System Type | Last Sector ( in CHS ): | Start Offset | Length |
+|----------------------------------|-----------------------------|------------------|-------------------------|--------------|--------|
+|[80]|[20 21 00]|[0c]|[71 21 10]|[00 08 00 00]|[00 00 04 00]|
+|[00]|[71 22 10]|[83]|[8a 08 82]|[00 08 04 00]|[00 f8 1b 00]|
+|[00]|[00 00 00]|[00]|[00 00 00]|[00 00 00 00]|[00 00 00 00]|
+|[00]|[00 00 00]|[00]|[00 00 00]|[00 00 00 00]|[00 00 00 00]|
+
+Because the bytes a stored big endian so the byte sequence has to be inverted to arrive at Windows little endian.
+The first partition starts at 0x00 0x80 0x00 0x00 -> 0x00000800.
