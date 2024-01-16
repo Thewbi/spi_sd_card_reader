@@ -279,6 +279,9 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 }
 ```
 
+
+
+
 ### Dealing with Partitions and File Systems
 
 At this point, we are able to communicate over SPI. The card is initialized and individual blocks can be read.
@@ -385,17 +388,28 @@ explorer application so that the user can browse the files stored on the partiti
 support for the linux partition (file system type 0x83), this partition will not show up in windows, although it exists
 on the SD card!
 
-With our SD Card reader application, the question becomes, how many file systems do you want to support?
-
 
 
 
 
 ## Reading File System Types
 
+With our SD Card reader application, the question becomes, how many file systems do you want to support?
+
 The first step is most likely to support the FAT32 file system type. The reason is that FAT32 is used by many
 devices so it is a good idea to have code in your portfolio that reads FAT32. Also FAT32 is documented (in very
 confusing way) and it is not too hard to implement (in a naive fashion).
+
+Also the other file systems are more modern than FAT32. As such they are more capable and more efficient but also
+more complicated to implement than FAT32.
+
+The rest of the document therefore talks about FAT32.
+
+
+
+
+
+## FAT 32
 
 Therefore, read the MBR and parse the partition table.
 If the file system type is 0x0C, read the start offset.
@@ -448,6 +462,6 @@ The before accessing the SD Card, this start index is added to each value comput
 
 
 
-## FAT 32
+
 
 
