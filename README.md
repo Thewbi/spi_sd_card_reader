@@ -401,15 +401,42 @@ Therefore, read the MBR and parse the partition table.
 If the file system type is 0x0C, read the start offset.
 
 When the start offset is read, this offset can be used to read that specific block from the SD card.
+
+```
+// 512 dummy bytes to poll the entire block
+for (uint16_t i = 0; i < 512; i++)
+{
+	sdBuf[i] = 0xFF;
+}
+
+// token respons of the reader routine
+uint8_t token;
+
+// block index
+uint32_t block_index = 0x00000800;
+
+// read the entire block into the sdBuf
+SD_readSingleBlock(block_index, sdBuf, &token);
+```
+
 This block on the SD Card contains the first block in that partition.
 
 From here on out, you have to activate the FAT32 code that interprets all bytes as being FAT32 data!
 (If the partition was of another file system type, you have to activate the code that processes that specific file system!)
 
-Here is one very important fact to realize when processing a partition.
+Here is one very important fact to realize when processing a partition specifically from a SD card:
+
 The FAT32 data in a FAT32 file system uses relative values. For example, there are formulae that will compute the block
 that stores all entries in a directory for example. The formula outputs a block index but this index is relative 
-to the partition! The partition itself on the SD card already has it's own offset! (0x8000 in the example above).
+to the partition! The FAT32 file system does not know where on the SD card it is stored and it does not care.
+The FAT32 file system is self-containd and it operates as if it begins at block index 0 no matter at which block
+index it really starts!
+
+The partition itself on the SD card already has it's own offset! (0x00000800 in the example above).
+This is a slight problem that we have to deal with. When the FAT32 file system says: You will find all files
+of the directory at block 14 (as an example), then on the SD Card, the block index 14 has to be pre processed first!
+The absolute offset of the partition start has to be added to the (relative) block index 14 to translate the relative
+block index 14 to the absolute block index!
 
 This means to resolve the absolute block index, you have to combine the block index of the partition with the block index
 returned by the formula! If you do not resolve the block to a correct absolute value, then you will read data from an incorrect block!
