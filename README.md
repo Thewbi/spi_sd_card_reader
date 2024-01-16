@@ -21,7 +21,7 @@ Source code inspired by:
 * https://github.com/hpaluch/hpaluch.github.io/wiki/Getting-started-with-LC-CH341A-USB-conversion-module
 * https://github.com/hpaluch/ch341-spi-shift-reg
 
-http://www.chinalctech.com/cpzx/Programmer/Serial_Module/2019/0124/266.html
+* http://www.chinalctech.com/cpzx/Programmer/Serial_Module/2019/0124/266.html
 
 
 
@@ -108,6 +108,18 @@ ULONG iDevIndex = 0;
 
 This will select the first device that is encountered on the USB bus having the specific device id and vendor id.
 
+```
+printf("Opening device# %lu\r\n", iDevIndex);
+HANDLE h341 = CH341OpenDevice(iDevIndex);
+if (h341 == NULL) {
+	printf("OpenDevice(iDevIndex=%lu) failed\r\n", iDevIndex);
+	return 0;
+}
+else {
+	printf("OpenDevice(iDevIndex=%lu) succeeded!\r\n", iDevIndex);
+}
+`` 
+
 ### CH341SetStream()
 
 Once the device is opened, CH341SetStream() is used to select the operating mode of the USB debugger.
@@ -124,19 +136,24 @@ is used.
 CH341StreamSPI4() is used to send and receive bytes. The function actually does perform a send operation
 and also a receive operation at the same time! There is no specific read and write operation for SPI in the API!
 
-If you want to send a byte of data, cann CH341StreamSPI4() with a buffer size of one. The USB SPI debugger will answer
-with a byte for each byte it receives! If the SD card plugged into the SD SPI card reader breakout board receives the
-byte, processes it and produces an response byte fast enough, then this byte is returned. CH341StreamSPI4() will place
+If you want to send a single byte of data, call CH341StreamSPI4() with a buffer size of one. 
+
+The USB SPI debugger will answer with a byte for each byte it receives, no matter if the SD card has actually answered with abyte! 
+
+If the SD card plugged into the SD SPI card reader breakout board receives the
+byte, processes it and produces an response byte fast enough, then this byte is returned by the USB adapter. CH341StreamSPI4() will place
 the returned byte into the buffer that is used to initially provide the request! This means that the same buffer is 
 used to contain the request and the request is then overriden to contain the response!
 
 If the SD card is not fast enough to produce a response byte, it will not pull the lines low and the SD Card reader breakout 
-board will read from the lines anyways. It will then read all high values, since the SD card does not pull any line low.
+board will read from the lines anyways. It will then read all high values, since the SD card does not pull any of the lines low.
 This means that if the SD card has not produced any output yet, you will read 0xFF (all lines high).
 
 If specific protocol spoken over SPI (in this case, the SD SPI card protocol) defines a response of 0x01 but you read 0xFF,
-then this most likely means that the card has not yet processed the request! The solution to this situation is to keep sending
-dummy data to the SD card over SPI in order to poll the SD card until it actually answers with the defined 0x01 byte!
+then this most likely means that the card has not yet processed the request and has not yet output the 0x01 byte! 
+The solution to this situation is to keep sending dummy data to the SD card over SPI in order to poll the SD card 
+until it actually answers with the defined 0x01 byte! For dummy data, the specific byte 0xFF is used. I do not know why
+exactly, but only 0xFF seems to work in order to poll the SD card!
 
 So the take away is:
 
@@ -169,3 +186,90 @@ uint8_t SPI_transfer(uint8_t data)
 
 CH341CloseDevice(iDevIndex); closes the USB device
 
+
+
+
+## Reading from a SD Card
+
+Once the SPI protocol layer is mastered and you are able to read bytes, then next layer of the software will be
+the SD card protocol.
+
+SD cards do have internal circuitry and internal state. A SD card can execute a protocol. Initially a SD card starts
+up in a state where it does not talk SPI. It talks some other protocol (SD I think). In order to disable
+the SD protocol and activate the SPI protocol certain messages have to be send to the SD card using the USB SPI
+debugger.
+
+Changing a SD card into SPI mode and reseting and starting it is called the "initialization sequence".
+This page: https://www.rjhcoding.com/avrc-sd-interface-1.php describes a sequence of message to send over SPI in
+order to perform all required steps. Following this tutorial worked for me with the USB SPI debugger, the breakout
+board and the specific SD cards that I used for testing.
+
+Once the Card is initialized and ready to be read data from, entire blocks can be read from the SD card.
+The block size can be changed in theory but it is recommended to keep the default of 512 bytes per block.
+
+In order to read a block, the SD card has to have gone through the initialization process and it has to be ready
+for data reading.
+
+The way to read data from a SD card is to read an entire block. To read a block the index of the block to read
+is sent to the SD card using the CMD 17! Once CMD 17 is sent and a positive response byte 0x01 is received, the 
+512 bytes have to be read from the SD card by sending the dummy byte 0xFF 512 bytes. For each dummy byte 0xFF,
+one byte of the block is returned by the SD card.
+
+Here is a implementation of a block reading function. Be aware that this implementation is very inefficient in that
+it reads a single byte at a time instead of large chunks of data (I tested with a byte buffer of 512 bytes and the
+data received is corrupted! So currently I have no solution on how to read a block more efficiently!)
+
+```
+uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token) 
+{    
+	uint8_t res1;
+	uint8_t read;    
+	uint16_t readAttempts = 0;    
+	
+	// set token to none    
+	*token = 0xFF; 
+	
+	// send CMD17    
+	SD_command(CMD17, addr, CMD17_CRC);    
+	
+	// read R1    
+	res1 = SD_readRes1();    
+	
+	// if response received from card    
+	if (res1 != 0xFF)    
+	{
+		// wait for a response token 0xFE because the SD Card takes some time to produce data (timeout = 100ms)        
+		readAttempts = 0;        
+		while (++readAttempts != SD_MAX_READ_ATTEMPTS)
+		{
+			if ((read = SPI_transfer(0xFF)) != 0xFF)
+			{
+				break;
+			}
+		}
+		
+		// if response token is 0xFE        
+		if (read == 0xFE)        
+		{            
+			// read 512 byte block            
+			for (uint16_t i = 0; i < 512; i++)
+			{
+				*buf++ = SPI_transfer(0xFF);
+			}
+			
+			// read 16-bit CRC            
+			SPI_transfer(0xFF);            
+			SPI_transfer(0xFF);
+		}
+		else
+		{
+			printf("Could not read from card!\r\n");
+		}
+		
+		// set token to card response        
+		*token = read;    
+	}   
+	
+	return res1;
+}
+```
