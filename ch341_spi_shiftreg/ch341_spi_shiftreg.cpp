@@ -9,6 +9,9 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <fstream>
+
+#include "FAT32.h"
 
 static void DumpByteArray(BYTE *b, int n){
 	int i = 0;
@@ -59,6 +62,22 @@ uint8_t SPI_transfer(uint8_t data)
 
 	//printf("<< %x\r\n", ioBuf[0]);
 	return ioBuf[0];
+}
+
+uint8_t SPI_transfer_512(uint8_t *data, uint32_t len)
+{
+	//printf(">> %x\r\n", data);
+	//uint8_t ioBuf[512] { 0xFF };
+	//ioBuf[0] = data;
+
+	if (!CH341StreamSPI4(iDevIndex, chip_select, len, data)) {
+		printf("CH341StreamSPI4 failed\r\n");
+		return 0x00;
+	}
+
+	//printf("<< %x\r\n", ioBuf[0]);
+	//return ioBuf[0];
+	return 0x01;
 }
 
 void SD_command(uint8_t cmd, uint32_t arg, uint8_t crc)
@@ -284,7 +303,7 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 	//CH341SetStream(iDevIndex, 0x81);
 	//SPI_transfer(0xFF); 
 	
-	Sleep(100);
+	//Sleep(100);
 	
 	// send CMD17    
 	SD_command(CMD17, addr, CMD17_CRC);    
@@ -314,12 +333,13 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 			{
 				*buf++ = SPI_transfer(0xFF);
 			}
+
+			// read 512 byte block
+			//SPI_transfer_512(buf, 512);
 			
 			// read 16-bit CRC            
 			SPI_transfer(0xFF);            
 			SPI_transfer(0xFF);
-
-
 		}
 		else
 		{
@@ -381,6 +401,22 @@ void PrintFrame(std::array<uint8_t, 6>& f)
 	for (auto e : f)
 		std::cout << std::hex << (int)e << " ";
 	std::cout << std::endl;
+}
+
+uint32_t root_dir_sector_count(BootEntry* bpb)
+{
+	return ((bpb->BPB_RootEntryCnt * 32) + (bpb->BPB_BytesPerSec - 1)) / bpb->BPB_BytesPerSec;
+
+}
+
+/*
+	Finds first data sector for given cluster number
+ */
+uint32_t first_sector_of_cluster(BootEntry* bpb, uint32_t cluster_num)
+{
+	uint32_t first_data_sector = bpb->BPB_RsvdSecCnt + (bpb->BPB_NumFATs * bpb->BPB_FATSz32) + root_dir_sector_count(bpb);
+
+	return (((cluster_num - 2) * (bpb->BPB_SecPerClus)) + first_data_sector) * 512;
 }
 
 int _tmain(int argc, _TCHAR* argv[])
@@ -548,25 +584,142 @@ int _tmain(int argc, _TCHAR* argv[])
 	// CMD 17 - read single block
 	//
 
-	printf("CMD 17 - read single block\r\n");
+	std::ofstream file("block_512.bin", std::ios::binary);
 
-	uint8_t res[5];
 	uint8_t sdBuf[512];
-	for (uint16_t i = 0; i < 512; i++)
-	{
-		sdBuf[i] = 0x00;
-	}
-	uint8_t token;
-	SD_readSingleBlock(0x00000000, sdBuf, &token);
 
-	if (token == 0xFE)
-	{
+	//for (uint32_t sector = 0x00000800; sector < 100000; sector++)
+	//for (uint32_t sector = 0; sector < 1; sector++)
+	//{
+		//printf("CMD 17 - read single block. block: %02x\r\n", sector);
+		//printf("CMD 17 - read single block. block: %d\r\n", sector);
+
+		/*if (sector % 10000 == 0)
+		{
+			printf("CMD 17 - read single block. block: %d\r\n", sector);
+		}*/
+
+		uint8_t res[5];
+		
 		for (uint16_t i = 0; i < 512; i++)
 		{
-			printf("%x ", sdBuf[i]);
+			sdBuf[i] = 0xFF;
 		}
-		printf("\r\n");
-	}
+		uint8_t token;
+
+		//SD_readSingleBlock(sector, sdBuf, &token);
+
+		//SD_readSingleBlock(0x00000000, sdBuf, &token);
+		
+		//SD_readSingleBlock(0x0000064F, sdBuf, &token);
+		SD_readSingleBlock(0x00000800, sdBuf, &token);
+		//SD_readSingleBlock(0x00001000, sdBuf, &token);
+		//SD_readSingleBlock(0x00200000, sdBuf, &token);
+
+		//SD_readSingleBlock(0x00002000, sdBuf, &token);
+		//SD_readSingleBlock(0x00002000, sdBuf, &token);
+
+		
+			
+		//file.write((char *)sdBuf, 512);
+			
+		
+
+		// output blocks that contain data other than 0x00
+		//if (sdBuf[0] != 0x00)
+		//{
+		//	printf("CMD 17 - read single block. block: %02x\r\n", sector);
+
+			/**/
+			if (token == 0xFE)
+			{
+				for (uint16_t i = 0; i < 512; i++)
+				{
+					printf("%02x ", sdBuf[i]);
+				}
+				printf("\r\n");
+			}
+			
+		//}
+
+		//Sleep(1000);
+
+	//}
+
+	//		file.flush();
+	//		file.close();
+/**/
+			//BootEntry* boot_entry = (BootEntry*)sdBuf;
+			BootEntry boot_entry;
+			memcpy(&boot_entry, sdBuf, sizeof(BootEntry));
+			printf("BPB_BytesPerSec: %d\r\n", boot_entry.BPB_BytesPerSec);
+			printf("BPB_SecPerClus: %d\r\n", boot_entry.BPB_SecPerClus);
+			printf("BPB_RsvdSecCnt: %d\r\n", boot_entry.BPB_RsvdSecCnt);
+			printf("BPB_NumFATs: %d\r\n", boot_entry.BPB_NumFATs);
+			printf("BPB_RootClus: %d\r\n", boot_entry.BPB_RootClus);
+			printf("BPB_FATSz32: %d\r\n", boot_entry.BPB_FATSz32);
+
+
+			uint32_t first_sector_of_cluster_result = first_sector_of_cluster(&boot_entry, boot_entry.BPB_RootClus);
+			//uint32_t first_sector_of_cluster_result = first_sector_of_cluster(&boot_entry, 0x800 + boot_entry.BPB_RootClus);
+			printf("first_sector_of_cluster_result: %d\r\n", first_sector_of_cluster_result);
+			
+
+			//// https://www.cs.fsu.edu/~cop4610t/lectures/project3/Week11/Slides_week11.pdf
+			//// https://www.youtube.com/watch?v=oIgvRUFojdA
+
+			//// Figure out where the Data Region starts in the disk
+			//uint32_t RootDirSectors = ((boot_entry.BPB_RootEntryCnt * 32) + (boot_entry.BPB_BytesPerSec - 1)) / boot_entry.BPB_BytesPerSec;
+			//printf("RootDirSectors: %d\r\n", RootDirSectors);
+			//
+			//uint32_t FirstDataSector = boot_entry.BPB_RsvdSecCnt + (boot_entry.BPB_NumFATs * boot_entry.BPB_FATSz32) + RootDirSectors;
+			//printf("FirstDataSector: %d\r\n", FirstDataSector);
+
+			//ULONG test = boot_entry.BPB_RootClus - 2;
+
+			//uint32_t FirstSectorOfCluster = ( (test) * boot_entry.BPB_SecPerClus ) + FirstDataSector;
+
+			//printf("FirstSectorOfCluster: %d\r\n", FirstSectorOfCluster);
+			
+
+
+			
+			
+			for (uint16_t i = 0; i < 512; i++)
+			{
+				sdBuf[i] = 0x00;
+			}
+
+			//SD_readSingleBlock((first_sector_of_cluster_result / 512), sdBuf, &token);
+			SD_readSingleBlock((0x0800 + (first_sector_of_cluster_result / 512) + 0), sdBuf, &token);
+			//SD_readSingleBlock(FirstSectorOfCluster, sdBuf, &token);
+			//SD_readSingleBlock(FirstDataSector / 512, sdBuf, &token);
+			//SD_readSingleBlock( ( ((FirstDataSector * boot_entry.BPB_BytesPerSec) / 512) ), sdBuf, &token);
+			//SD_readSingleBlock(0x00002000 + 0x20, sdBuf, &token);
+			if (token == 0xFE)
+			{
+				for (uint16_t i = 0; i < 512; i++)
+				{
+					printf("%02x ", sdBuf[i]);
+				}
+				printf("\r\n");
+			}
+
+			for (uint32_t counter = 0; counter * sizeof(DirectoryEntry) < boot_entry.BPB_BytesPerSec; counter++)
+			{
+				DirectoryEntry directory_entry;
+				memcpy(&directory_entry, sdBuf + (counter * sizeof(DirectoryEntry)), sizeof(DirectoryEntry));
+
+				for (int jj = 0; jj < 11; jj++)
+				{
+					printf("%c", directory_entry.Name[jj]);
+				}
+				printf("\n");
+			}
+
+			//directory_entry.Attr
+
+			
 
 	printf("Closeing device# %lu\r\n", iDevIndex);
 	CH341CloseDevice(iDevIndex);
@@ -658,10 +811,10 @@ int _tmain(int argc, _TCHAR* argv[])
 	
 	//CH341SetStream(iDevIndex, 0x80);
 	//CH341SetStream(iDevIndex, 0x81);
-	CH341SetStream(iDevIndex, 0x84);
+	//CH341SetStream(iDevIndex, 0x84);
 	//CH341SetStream(iDevIndex, 0x85);
 	//CH341SetStream(iDevIndex, 0x01);
-	Sleep(10);
+	//Sleep(10);
 
 	/*
 
