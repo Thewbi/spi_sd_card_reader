@@ -316,7 +316,7 @@ uint8_t SD_readSingleBlock(uint32_t addr, uint8_t *buf, uint8_t *token)
 	{
 		// wait for a response token 0xFE because the SD Card takes some time to produce data (timeout = 100ms)        
 		readAttempts = 0;        
-		while(++readAttempts != SD_MAX_READ_ATTEMPTS)
+		while (++readAttempts != SD_MAX_READ_ATTEMPTS)
 		{
 			//Sleep(1);
 			if ((read = SPI_transfer(0xFF)) != 0xFF)

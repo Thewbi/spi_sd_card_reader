@@ -294,7 +294,8 @@ In this document I will describe a scenario that is common in embedded systems.
 In embedded systems, a sd card often times is used as a replacement for a hard drive.
 
 As such the sd card is partitioned like a hard drive can be partitioned.
-The partitioning sceme is the top most layer that we have to deal with.
+The partitioning scheme is the top most layer that we have to deal with.
+It is most likely the partitioning scheme defined by Microsoft.
 
 The first block (block index 0, 512 bytes) of the SD card contains the MBR (Master Boot Record)
 This MBR is constructed according to a specific format but the bytes that are written into the individual parts
@@ -348,24 +349,78 @@ The format is:
 As you can see in the example MBR above, there is no machine code in the first 440 bytes.
 Instead the creator of the SD card has entered 0xFF into the first 440 bytes. This was 
 probably done because the embedded system will not execute the boot code stored in the
-first 440 bytes!
+first 440 bytes but it has it's own specific startup process!
 
-The disk signature is 34 28 e0 97
+The disk signature is 34 28 e0 97 (I do not know what that means!)
 
 The null bytes are present.
 
-The partition table consists of the four 16 byte entries:
+The partition table consists of four 16 byte entries:
 
-* https://en.wikipedia.org/wiki/Master_boot_record
-* https://thestarman.pcministry.com/asm/mbr/PartTables3.htm
-* https://thestarman.pcministry.com/asm/mbr/PartTypes.htm
-
-| Bootable Flag (0x80 == bootable) |  Starting Sector ( in CHS ) | File System Type | Last Sector ( in CHS ): | Start Offset | Length |
+| (0x80 == bootable) |  Starting Sector ( in CHS ) | File System Type | Last Sector ( in CHS ): | Start Offset | Length |
 |----------------------------------|-----------------------------|------------------|-------------------------|--------------|--------|
 |[80]|[20 21 00]|[0c]|[71 21 10]|[00 08 00 00]|[00 00 04 00]|
 |[00]|[71 22 10]|[83]|[8a 08 82]|[00 08 04 00]|[00 f8 1b 00]|
 |[00]|[00 00 00]|[00]|[00 00 00]|[00 00 00 00]|[00 00 00 00]|
 |[00]|[00 00 00]|[00]|[00 00 00]|[00 00 00 00]|[00 00 00 00]|
 
-Because the bytes a stored big endian so the byte sequence has to be inverted to arrive at Windows little endian.
+The MBR is explained here:
+
+* https://en.wikipedia.org/wiki/Master_boot_record
+* https://thestarman.pcministry.com/asm/mbr/PartTables3.htm
+* https://thestarman.pcministry.com/asm/mbr/PartTypes.htm
+
+Because the bytes are stored big endian, the byte sequence has to be inverted to arrive at Windows little endian.
 The first partition starts at 0x00 0x80 0x00 0x00 -> 0x00000800.
+
+In the specific partition table above, it can be seen that only the first two of the four partition entries are used
+because the lower two entries are filled with 0x00 which means they are empty.
+
+The first entry (is bootable) has a file system type of 0x0C which is "32-bit FAT, using INT 13 Extensions".
+The second entry is of type 0x83: "Linux native file systems (ext2/3/4, JFS, Reiser, xiafs, and others)".
+
+What happens if this SD card is plugged into a SD Card Reader and the SD Card Reader is plugged into a Windows 10 PC?
+The Windows operating system will try to mount all the partitions and it tries to show all the partitions in the 
+explorer application so that the user can browse the files stored on the partition. Because Windows 10 has no automatic
+support for the linux partition (file system type 0x83), this partition will not show up in windows, although it exists
+on the SD card!
+
+With our SD Card reader application, the question becomes, how many file systems do you want to support?
+
+
+
+
+
+## Reading File System Types
+
+The first step is most likely to support the FAT32 file system type. The reason is that FAT32 is used by many
+devices so it is a good idea to have code in your portfolio that reads FAT32. Also FAT32 is documented (in very
+confusing way) and it is not too hard to implement (in a naive fashion).
+
+Therefore, read the MBR and parse the partition table.
+If the file system type is 0x0C, read the start offset.
+
+When the start offset is read, this offset can be used to read that specific block from the SD card.
+This block on the SD Card contains the first block in that partition.
+
+From here on out, you have to activate the FAT32 code that interprets all bytes as being FAT32 data!
+(If the partition was of another file system type, you have to activate the code that processes that specific file system!)
+
+Here is one very important fact to realize when processing a partition.
+The FAT32 data in a FAT32 file system uses relative values. For example, there are formulae that will compute the block
+that stores all entries in a directory for example. The formula outputs a block index but this index is relative 
+to the partition! The partition itself on the SD card already has it's own offset! (0x8000 in the example above).
+
+This means to resolve the absolute block index, you have to combine the block index of the partition with the block index
+returned by the formula! If you do not resolve the block to a correct absolute value, then you will read data from an incorrect block!
+
+One approach I am thinking about would be to have a global variable that stores the start index of the partition.
+The before accessing the SD Card, this start index is added to each value computed from the FAT32 implementation.
+
+
+
+
+
+## FAT 32
+
+
