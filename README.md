@@ -118,7 +118,7 @@ if (h341 == NULL) {
 else {
 	printf("OpenDevice(iDevIndex=%lu) succeeded!\r\n", iDevIndex);
 }
-`` 
+```
 
 ### CH341SetStream()
 
